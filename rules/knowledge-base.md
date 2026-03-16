@@ -105,52 +105,44 @@ When writing scripts or components that query Prismic data (filters, GraphQuery,
 
 | File | What It Covers |
 |------|----------------|
-| [LOGTAIL-LOG-QUERYING-GUIDE.md](file:///.notes/information/LOGTAIL-LOG-QUERYING-GUIDE.md) | **DEFINITIVE GUIDE** — Credentials, hot vs. cold storage (`UNION ALL` pattern), ClickHouse SQL syntax, cURL examples, output format, analysis scripts, and troubleshooting. |
+| [LOGTAIL-LOG-QUERYING-GUIDE.md](file:///.notes/information/LOGTAIL-LOG-QUERYING-GUIDE.md) | **DEFINITIVE GUIDE** — Credentials, hot vs. cold storage (`UNION ALL` pattern), ClickHouse SQL syntax, Node.js fetch workflow, output format, query templates, and troubleshooting. |
 
 ### Supporting Files
 
 | File | Path | Purpose |
 |------|------|---------|
-| `fetch_logs.ps1` | `.notes/logs/` | PowerShell script for querying Logtail — reads SQL from `query.sql`, handles auth and TLS. |
-| `query.sql` | `.notes/logs/` | Editable SQL template for Logtail queries (currently configured for CaseWare/WebDAV). |
+| `fetch_logs.ps1` | `.notes/logs/` | PowerShell wrapper that uses **Node.js `fetch`** internally to query Logtail. Reads SQL from `query.sql`. |
+| `query.sql` | `.notes/logs/` | Editable SQL template for Logtail queries. Update this before each query run. |
 | `analyze-logs.js` | `.notes/report-scripts/` | Node.js log analysis utility. |
 | `analyze_logs.js` | `.notes/Caseware/` | CaseWare-specific log analyzer. |
+
+### ⚠️ CRITICAL: Connection Method
+
+**You MUST use Node.js `fetch` to query Logtail.** Both `curl.exe` and `Invoke-WebRequest` are **permanently blocked** by the network firewall from reaching `eu-nbg-2-connect.betterstackdata.com`. Do NOT attempt them — they will always fail with "Bad access" / "Unable to connect to the remote server". The `fetch_logs.ps1` script already handles this correctly via Node.js.
 
 ### Critical Rules for Log Queries
 
 1. **Always use `UNION ALL`** for queries over 2 hours — hot storage (`remote()`) only holds 2-4 hours of data.
 2. **Cold storage filter**: Include `WHERE _row_type = 1` on the `s3Cluster` side of the union.
-3. **Windows**: Always use the `-k` flag with cURL to bypass SSL certificate issues.
-4. **Retention**: Logs are only retained for **15 days**. Metrics for 30 days.
-5. **Auth**: Use the HTTP API username/password (not the Global API token) for SQL queries.
+3. **Retention**: Logs are only retained for **15 days**. Metrics for 30 days.
+4. **Auth**: Use the HTTP API username/password (not the Global API token) for SQL queries.
+5. **PowerShell inline gotcha**: Complex Node.js one-liners break in PowerShell (backticks, `$`, `%`). Write to a `.js` file and run with `node` if needed.
 
 ### Execution Workflow (How to Actually Run Queries)
 
-**Step 1: Use `fetch_logs.ps1` + `query.sql`** (preferred method):
-1. Write your SQL query to `.notes/logs/query.sql`
-2. Update the `-OutFile` path in `.notes/logs/fetch_logs.ps1` if needed
-3. Run: `powershell -File .notes/logs/fetch_logs.ps1` from the repo root
+**Step 1**: Write your SQL query to `.notes/logs/query.sql`
+**Step 2**: Set the `$outFile` variable at the top of `.notes/logs/fetch_logs.ps1`
+**Step 3**: Run: `powershell -File .notes/logs/fetch_logs.ps1` from the repo root
 
-**Step 2: If Logtail API returns 500 / "Failed to connect: fetch failed"** (this happens):
-- Logtail's ClickHouse backend occasionally has connectivity issues
-- Fall back to **Heroku CLI** (see below)
+That's it. The script uses Node.js `fetch` internally and reports success/failure.
 
-**Step 3: Heroku CLI Fallback**:
+**Fallback (Heroku CLI)** — only for live/recent logs if Logtail itself is down (HTTP 500):
 ```powershell
 $env:HEROKU_API_KEY = "<key from .env.local>"
 heroku logs -a bakertilly -n 1500 2>&1 | Out-String | Set-Content -Path "C:\temp\heroku-raw-logs.txt"
-# Then filter:
-Select-String -Path "C:\temp\heroku-raw-logs.txt" -Pattern "code=H12|code=H18" | ForEach-Object { $_.Line }
 ```
-- **Note**: Heroku CLI is limited to the most recent log buffer (~1500 lines). For historical data, Logtail is required.
-- **Note**: The installed Heroku CLI version (8.7.1) does NOT support `--no-color`. Omit it.
-- **Note**: The `--source heroku` flag filters to Heroku router logs only.
-
-### Windows PowerShell Gotchas
-
-1. **`curl` is aliased to `Invoke-WebRequest`** in PowerShell. Use `curl.exe` explicitly for real cURL.
-2. **`Invoke-WebRequest` may also fail** to connect to Logtail due to TLS issues. The `fetch_logs.ps1` script handles TLS setup properly — use it instead of raw `Invoke-WebRequest`.
-3. **Template literals with `%`** in Node.js `-e` one-liners break in PowerShell. Write queries to a file and read them with `fs.readFileSync` instead.
+- Heroku CLI is limited to the most recent ~1500 lines. For historical data, Logtail is required.
+- Installed Heroku CLI version (8.7.1) does NOT support `--no-color`.
 
 ### Heroku Error Code Reference
 
